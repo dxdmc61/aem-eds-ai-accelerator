@@ -1,22 +1,15 @@
+// services/aemAutomation.js
 import axios from 'axios';
 import FormData from 'form-data';
 
 /**
  * Programmatically constructs a documentless AEM Edge Delivery Services page mapping 
  * exactly to the core Franklin JCR layout schema observed in infinity.json.
- * * @param {Object} params
- * @param {string} params.aemAuthorUrl - The URL string of your cloud author environment
- * @param {string} params.projectName - Your tenant identity string (e.g. "suncrop")
- * @param {string} params.pageSlug - Clean URL routing string for the page (e.g. "home-migrated")
- * @param {string} params.pageTitle - Editorial descriptive text for the title meta field
- * @param {Object} params.migrationPlan - Structured JSON context compiled by Gemini
- * @param {string} params.accessToken - Active OAuth Authorization Bearer key token
  */
-export async function provisionFranklinAemPage({ aemAuthorUrl, projectName, pageSlug, pageTitle, migrationPlan, accessToken }) {
+export async function provisionFranklinAemPage({ aemAuthorUrl, projectName, pageSlug, pageTitle, migrationPlan, aemUser, aemPassword }) {
   const tenant = projectName.toLowerCase().replace(/[^a-z0-9]/g, '');
   const cleanAuthorUrl = aemAuthorUrl.replace(/\/$/, '');
   
-  // Build canonical resource API endpoints
   const pagePath = `${cleanAuthorUrl}/content/${tenant}/en/${pageSlug}`;
   console.log(`[Franklin Automator] Provisioning layout structure at: ${pagePath}`);
 
@@ -39,51 +32,65 @@ export async function provisionFranklinAemPage({ aemAuthorUrl, projectName, page
     // 3. Transform Scraped Blocks array lists into Nested Franklin Sections
     migrationPlan.blocks.forEach((block, blockIndex) => {
       const normalizedBlockId = block.name.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+      const capitalizedBlockName = block.name.charAt(0).toUpperCase() + block.name.slice(1);
       
       // Construct an isolated wrapping section matching infinity.json format
       const sectionNodePath = `./jcr:content/root/section_${blockIndex}`;
       payloadForm.append(`${sectionNodePath}/jcr:primaryType`, 'nt:unstructured');
       payloadForm.append(`${sectionNodePath}/sling:resourceType`, 'core/franklin/components/section/v1/section');
       
+      // FIX 1: Add missing model descriptor onto the Section block itself
+      payloadForm.append(`${sectionNodePath}/model`, 'section');
+
       // Establish the core container node within this specific section context
       const blockContainerNodePath = `${sectionNodePath}/${normalizedBlockId}`;
       payloadForm.append(`${blockContainerNodePath}/jcr:primaryType`, 'nt:unstructured');
       payloadForm.append(`${blockContainerNodePath}/sling:resourceType`, 'core/franklin/components/block/v1/block');
-      payloadForm.append(`${blockContainerNodePath}/name`, block.name);
+      payloadForm.append(`${blockContainerNodePath}/name`, capitalizedBlockName);
       payloadForm.append(`${blockContainerNodePath}/model`, normalizedBlockId);
       payloadForm.append(`${blockContainerNodePath}/filter`, normalizedBlockId);
 
       // Collect field key maps to identify layout profiles
-      const fieldNamesList = block.fields.map(f => f.name);
-      fieldNamesList.forEach((name, i) => {
-        payloadForm.append(`${blockContainerNodePath}/modelFields/${i}`, name);
+      const fieldNamesList = block.fields && Array.isArray(block.fields) ? block.fields.map(f => f.name) : [];
+      
+      // FIX 2: Explicitly tell Sling via TypeHint to construct a String Array instead of structured nested object keys
+      fieldNamesList.forEach((name) => {
+        payloadForm.append(`${blockContainerNodePath}/modelFields`, name);
       });
+      if (fieldNamesList.length > 0) {
+        payloadForm.append(`${blockContainerNodePath}/modelFields@TypeHint`, 'String[]');
+      }
 
       // Handle Component Item Scaffolding Strategy
       if (block.isNestedArray || block.items) {
-        // Multi-row structured array components (e.g. Carousels, Card Grids, Accordions)
         const blockItems = Array.isArray(block.items) ? block.items : [];
         
         blockItems.forEach((itemData, itemIndex) => {
-          const itemNodeKey = `item_${Date.now()}_${itemIndex}`;
+          // FIX 3: Match the naming suffix scheme seen in working items (e.g., card_0, card_1)
+          const cleanSingleItemName = normalizedBlockId.endsWith('s') ? normalizedBlockId.slice(0, -1) : normalizedBlockId;
+          const itemNodeKey = `${cleanSingleItemName}_${itemIndex}`;
           const itemNodePath = `${blockContainerNodePath}/${itemNodeKey}`;
           
           payloadForm.append(`${itemNodePath}/jcr:primaryType`, 'nt:unstructured');
           payloadForm.append(`${itemNodePath}/sling:resourceType`, 'core/franklin/components/block/v1/block/item');
-          payloadForm.append(`${itemNodePath}/model`, normalizedBlockId);
-          payloadForm.append(`${itemNodePath}/name`, `${block.name} Item`);
+          payloadForm.append(`${itemNodePath}/model`, cleanSingleItemName);
+          payloadForm.append(`${itemNodePath}/name`, `${capitalizedBlockName} Item`);
           
-          fieldNamesList.forEach((name, i) => {
-            payloadForm.append(`${itemNodePath}/modelFields/${i}`, name);
+          // Apply model fields array mapping inside the nested row items
+          fieldNamesList.forEach((name) => {
+            payloadForm.append(`${itemNodePath}/modelFields`, name);
           });
+          if (fieldNamesList.length > 0) {
+            payloadForm.append(`${itemNodePath}/modelFields@TypeHint`, 'String[]');
+          }
 
-          // Append value streams extracted from the source site
+          // Append item properties
           Object.entries(itemData).forEach(([key, value]) => {
             payloadForm.append(`${itemNodePath}/${key}`, String(value));
           });
         });
       } else {
-        // Flat, unified structural layouts (e.g. Simple Hero elements, Text rows)
+        // Flat content blocks (e.g., Hero elements)
         if (block.content) {
           Object.entries(block.content).forEach(([key, value]) => {
             payloadForm.append(`${blockContainerNodePath}/${key}`, String(value));
@@ -92,11 +99,14 @@ export async function provisionFranklinAemPage({ aemAuthorUrl, projectName, page
       }
     });
 
-    // 4. Issue the unified request mutation to the target Sling Server
+    // 4. Construct the Base64 Basic Authentication Token header
+    const basicAuthToken = Buffer.from(`${aemUser}:${aemPassword}`).toString('base64');
+
+    // 5. Issue the unified request mutation to the target Sling Server
     await axios.post(pagePath, payloadForm, {
       headers: {
         ...payloadForm.getHeaders(),
-        'Authorization': `Bearer ${accessToken}`
+        'Authorization': `Basic ${basicAuthToken}`
       }
     });
 

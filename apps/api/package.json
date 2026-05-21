@@ -12,6 +12,7 @@
   "dependencies": {
     "@google/genai": "^2.4.0",
     "@octokit/rest": "^20.1.1",
+    "axios": "^1.16.1",
     "cheerio": "^1.0.0-rc.12",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
@@ -19,6 +20,7 @@
     "fs-extra": "^11.2.0",
     "nanoid": "^5.0.7",
     "playwright": "^1.60.0",
+    "simple-git": "^3.36.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
