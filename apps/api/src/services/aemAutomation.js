@@ -3,46 +3,71 @@ import axios from 'axios';
 import FormData from 'form-data';
 
 /**
- * Programmatically constructs a documentless AEM Edge Delivery Services page mapping 
- * exactly to the core Franklin JCR layout schema observed in infinity.json.
+ * Programmatically provisions clean documentless Edge Delivery Services structures.
+ * Forces site root and language segments to generate as cq:Page nodes rather than generic folders.
  */
 export async function provisionFranklinAemPage({ aemAuthorUrl, projectName, pageSlug, pageTitle, migrationPlan, aemUser, aemPassword }) {
   const tenant = projectName.toLowerCase().replace(/[^a-z0-9]/g, '');
   const cleanAuthorUrl = aemAuthorUrl.replace(/\/$/, '');
   
-  const pagePath = `${cleanAuthorUrl}/content/${tenant}/en/${pageSlug}`;
-  console.log(`[Franklin Automator] Provisioning layout structure at: ${pagePath}`);
+  // Base site path destination configuration
+  const siteRootPath = `./jcr:content/root`; // Relative handling context if hitting page path directly
+  const cleanBaseRoot = `/content/${tenant}`;
+  
+  console.log(`[Franklin Automator] Processing page deployment structure for site content root: ${cleanBaseRoot}`);
 
   try {
     const payloadForm = new FormData();
 
-    // 1. Establish core Primary Page Node Layout Meta Fields
-    payloadForm.append('./jcr:primaryType', 'cq:Page');
-    payloadForm.append('./jcr:content/jcr:primaryType', 'cq:PageContent');
-    payloadForm.append('./jcr:content/jcr:title', pageTitle);
-    payloadForm.append('./jcr:content/pageTitle', pageTitle);
-    payloadForm.append('./jcr:content/sling:resourceType', 'core/franklin/components/page/v1/page');
-    payloadForm.append('./jcr:content/cq:template', '/libs/core/franklin/templates/page');
-    payloadForm.append('./jcr:content/jcr:isCheckedOut', 'true');
+    // =========================================================================
+    // FIX: FORCE INTERMEDIATE SITE AND LANGUAGE OBJECTS TO BE PAGES, NOT FOLDERS
+    // =========================================================================
+    // By providing structural metadata parameters explicitly, the Sling Post Servlet 
+    // overrides the default fallback to 'sling:OrderedFolder'.
+    
+    // 1. Enforce Site Node Schema Property Definitions (/content/axis)
+    payloadForm.append(`../jcr:primaryType`, 'cq:Page');
+    payloadForm.append(`../jcr:content/jcr:primaryType`, 'cq:PageContent');
+    payloadForm.append(`../jcr:content/sling:resourceType`, 'core/franklin/components/page/v1/page');
+    payloadForm.append(`../jcr:content/jcr:title`, tenant);
+    payloadForm.append(`../jcr:content/cq:template`, '/libs/core/franklin/templates/page');
 
-    // 2. Establish Primary Body Layout Container Engine (Root Node)
-    payloadForm.append('./jcr:content/root/jcr:primaryType', 'nt:unstructured');
-    payloadForm.append('./jcr:content/root/sling:resourceType', 'core/franklin/components/root/v1/root');
+    // 2. Enforce Locale Root Node Schema Property Definitions (/content/axis/en)
+    payloadForm.append(`./jcr:primaryType`, 'cq:Page');
+    payloadForm.append(`./jcr:content/jcr:primaryType`, 'cq:PageContent');
+    payloadForm.append(`./jcr:content/sling:resourceType`, 'core/franklin/components/page/v1/page');
+    payloadForm.append(`./jcr:content/jcr:title`, 'en');
+    payloadForm.append(`./jcr:content/cq:template`, '/libs/core/franklin/templates/page');
 
-    // 3. Transform Scraped Blocks array lists into Nested Franklin Sections
+    // 3. Current Targeted Document Asset Core (e.g., /content/axis/en/index)
+    const targetNodePrefix = `./${pageSlug}`;
+    payloadForm.append(`${targetNodePrefix}/jcr:primaryType`, 'cq:Page');
+    payloadForm.append(`${targetNodePrefix}/jcr:content/jcr:primaryType`, 'cq:PageContent');
+    payloadForm.append(`${targetNodePrefix}/jcr:content/jcr:title`, pageTitle);
+    payloadForm.append(`${targetNodePrefix}/jcr:content/pageTitle`, pageTitle);
+    payloadForm.append(`${targetNodePrefix}/jcr:content/sling:resourceType`, 'core/franklin/components/page/v1/page');
+    payloadForm.append(`${targetNodePrefix}/jcr:content/cq:template`, '/libs/core/franklin/templates/page');
+    payloadForm.append(`${targetNodePrefix}/jcr:content/jcr:isCheckedOut`, 'true');
+
+    // Establish targeted Page Container Engine Node
+    const targetRootPath = `${targetNodePrefix}/jcr:content/root`;
+    payloadForm.append(`${targetRootPath}/jcr:primaryType`, 'nt:unstructured');
+    payloadForm.append(`${targetRootPath}/sling:resourceType`, 'core/franklin/components/root/v1/root');
+
+    // =========================================================================
+    // MIGRATION LAYOUT ENGINE PROCESSING (MATCHING WORKING SCHEMA)
+    // =========================================================================
     migrationPlan.blocks.forEach((block, blockIndex) => {
       const normalizedBlockId = block.name.toLowerCase().replace(/[^a-z0-9-]/g, '-');
       const capitalizedBlockName = block.name.charAt(0).toUpperCase() + block.name.slice(1);
       
-      // Construct an isolated wrapping section matching infinity.json format
-      const sectionNodePath = `./jcr:content/root/section_${blockIndex}`;
+      // Building isolated standalone structural sections matching working blueprint layout
+      const sectionNodePath = `${targetRootPath}/section_${blockIndex}`;
       payloadForm.append(`${sectionNodePath}/jcr:primaryType`, 'nt:unstructured');
       payloadForm.append(`${sectionNodePath}/sling:resourceType`, 'core/franklin/components/section/v1/section');
-      
-      // FIX 1: Add missing model descriptor onto the Section block itself
       payloadForm.append(`${sectionNodePath}/model`, 'section');
 
-      // Establish the core container node within this specific section context
+      // Add a uniquely configured block wrapper reference element node inside the section
       const blockContainerNodePath = `${sectionNodePath}/${normalizedBlockId}`;
       payloadForm.append(`${blockContainerNodePath}/jcr:primaryType`, 'nt:unstructured');
       payloadForm.append(`${blockContainerNodePath}/sling:resourceType`, 'core/franklin/components/block/v1/block');
@@ -50,10 +75,10 @@ export async function provisionFranklinAemPage({ aemAuthorUrl, projectName, page
       payloadForm.append(`${blockContainerNodePath}/model`, normalizedBlockId);
       payloadForm.append(`${blockContainerNodePath}/filter`, normalizedBlockId);
 
-      // Collect field key maps to identify layout profiles
+      // Collect field layout profile parameter arrays accurately
       const fieldNamesList = block.fields && Array.isArray(block.fields) ? block.fields.map(f => f.name) : [];
       
-      // FIX 2: Explicitly tell Sling via TypeHint to construct a String Array instead of structured nested object keys
+      // Force native string arrays for field lists to avoid structural key transformation errors
       fieldNamesList.forEach((name) => {
         payloadForm.append(`${blockContainerNodePath}/modelFields`, name);
       });
@@ -61,12 +86,12 @@ export async function provisionFranklinAemPage({ aemAuthorUrl, projectName, page
         payloadForm.append(`${blockContainerNodePath}/modelFields@TypeHint`, 'String[]');
       }
 
-      // Handle Component Item Scaffolding Strategy
+      // Handle Component Nested Item Row Arrays Processing Strategy
       if (block.isNestedArray || block.items) {
         const blockItems = Array.isArray(block.items) ? block.items : [];
         
         blockItems.forEach((itemData, itemIndex) => {
-          // FIX 3: Match the naming suffix scheme seen in working items (e.g., card_0, card_1)
+          // Normalizing suffix schemes (e.g. converting multi-row properties to card_0, card_1 style keys)
           const cleanSingleItemName = normalizedBlockId.endsWith('s') ? normalizedBlockId.slice(0, -1) : normalizedBlockId;
           const itemNodeKey = `${cleanSingleItemName}_${itemIndex}`;
           const itemNodePath = `${blockContainerNodePath}/${itemNodeKey}`;
@@ -76,7 +101,6 @@ export async function provisionFranklinAemPage({ aemAuthorUrl, projectName, page
           payloadForm.append(`${itemNodePath}/model`, cleanSingleItemName);
           payloadForm.append(`${itemNodePath}/name`, `${capitalizedBlockName} Item`);
           
-          // Apply model fields array mapping inside the nested row items
           fieldNamesList.forEach((name) => {
             payloadForm.append(`${itemNodePath}/modelFields`, name);
           });
@@ -84,13 +108,13 @@ export async function provisionFranklinAemPage({ aemAuthorUrl, projectName, page
             payloadForm.append(`${itemNodePath}/modelFields@TypeHint`, 'String[]');
           }
 
-          // Append item properties
+          // Distribute node field dataset values properly
           Object.entries(itemData).forEach(([key, value]) => {
             payloadForm.append(`${itemNodePath}/${key}`, String(value));
           });
         });
       } else {
-        // Flat content blocks (e.g., Hero elements)
+        // Flat structures (e.g., Heroes with single level structures)
         if (block.content) {
           Object.entries(block.content).forEach(([key, value]) => {
             payloadForm.append(`${blockContainerNodePath}/${key}`, String(value));
@@ -99,22 +123,22 @@ export async function provisionFranklinAemPage({ aemAuthorUrl, projectName, page
       }
     });
 
-    // 4. Construct the Base64 Basic Authentication Token header
+    // Execution Context Setup via unified POST call addressing the language route directly
+    const executionEndpointUrl = `${cleanAuthorUrl}/content/${tenant}/en`;
     const basicAuthToken = Buffer.from(`${aemUser}:${aemPassword}`).toString('base64');
 
-    // 5. Issue the unified request mutation to the target Sling Server
-    await axios.post(pagePath, payloadForm, {
+    await axios.post(executionEndpointUrl, payloadForm, {
       headers: {
         ...payloadForm.getHeaders(),
         'Authorization': `Basic ${basicAuthToken}`
       }
     });
 
-    console.log(`[Franklin Automator] Page structure deployed successfully! URL: ${pagePath}`);
-    return { success: true, path: pagePath };
+    console.log(`[Franklin Automator] Site layout environment successfully generated at: ${executionEndpointUrl}/${pageSlug}`);
+    return { success: true, path: `${executionEndpointUrl}/${pageSlug}` };
 
   } catch (error) {
-    console.error(`[Franklin Automator] Page node injection procedure failed:`, error.response?.data || error.message);
-    throw new Error(`Failed establishing Franklin structured page layout parameters: ${error.message}`);
+    console.error(`[Franklin Automator] Structure injection failed:`, error.response?.data || error.message);
+    throw new Error(`Failed establishing site architecture profiles: ${error.message}`);
   }
 }
