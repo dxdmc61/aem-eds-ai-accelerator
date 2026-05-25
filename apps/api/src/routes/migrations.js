@@ -178,7 +178,7 @@ async function runDynamicScraperPipeline(targetUrl) {
 
   } catch (err) {
     console.error(`[Dynamic Engine Error] Automated scraping extraction failure:`, err.message);
-  } final {
+  } finally {
     await browser.close();
   }
 
